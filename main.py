@@ -6,21 +6,22 @@ import torch.nn.functional as F
 import random 
 import numpy as np
 random.seed(4)
+context_size=4
+epochs=1000
+feat=6
+batch_size=32
 
 class NN(nn.Module):
     def __init__(self) -> None:
         super(NN,self).__init__()
-        self.fc1=nn.Linear(3,16)
-        self.fc2=nn.Linear(16,128)
-        self.fc4=nn.Linear(128,27)
-        self.do=nn.Dropout(0.5)
+        self.fc1=nn.Linear(context_size*feat,16)
+        self.bn1=nn.BatchNorm1d(1)
+        self.fc2=nn.Linear(16,27)
     def forward(self, x):
-        x = x.float()  
-        x = F.tanh(self.fc1(x))
-        x=self.do(x)
-        x = F.tanh(self.fc2(x))
-        x=self.do(x)
-        x = self.fc4(x)
+        x=x.float()
+        x=F.tanh(self.fc1(x))
+        # x=self.bn1(x)
+        x=F.tanh(self.fc2(x))
         return x
 def load_dataset():
     df=pd.read_csv('pokemon.csv')
@@ -44,7 +45,7 @@ def load_dataset():
 def create_dataset(words):
     X, Y = [], []
     for w in words:
-        short_term_memory=[0]*3
+        short_term_memory=[0]*context_size
         for ch in w+'.':    
             X.append(short_term_memory)
             Y.append(cmap[ch])
@@ -62,24 +63,29 @@ Xtest,Ytest=create_dataset(test)
 model=NN()
 lossfn=nn.CrossEntropyLoss()   
 opt=optim.SGD(model.parameters(),lr=0.001)
-epochs=1
-# print(Ytrain[0].float())
+EM=torch.randn((27,feat))
+
+print("Training started")
 for epoch in range(epochs):
-    bno=torch.randint(0,Xtrain.shape[0],(32,))
     model.train()
     running_loss=0.0    
-    running_acc=0.0
-    input=Xtrain[bno]
-    label=Ytrain[bno]
-    for i in range(len(input)):
-        out=model(input[i].unsqueeze(0))
-        loss=lossfn(out, label[i].unsqueeze(0))
+    for batchidx in range(0,len(Xtrain),batch_size):
+        input=Xtrain[batchidx:batchidx+batch_size]
+        label=Ytrain[batchidx:batchidx+batch_size]
+
+        emb=EM[input]
+        out=model(emb.view(-1,context_size*feat))
+        loss=lossfn(out, label)
         opt.zero_grad()
         loss.backward()
         opt.step()
         running_loss += loss.item()
-    print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(Xtrain)}")
+    if epoch%20==0:
+        print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(Xtrain)}")
 model.eval()
+print("End of training")
+torch.save(model.state_dict(), 'Model weights')
+print("Weights saved")
 # test_loss = 0.0
 # with torch.no_grad():
 #     for i in range(len(Xtest)):
@@ -89,14 +95,15 @@ model.eval()
 # print(f"Test Loss: {test_loss / len(Xtest)}")
 for j in range(5):
     rr=random.randint(1,27)
-    context=[0,0,rr]
+    context=[0]*(context_size-1)+[rr]
     pkm=[imap[rr]]
     check=0
     while context[-1]!=0:
         check=check+1
         if check>10:
             break
-        r=model(torch.Tensor(context))
+        emb=EM[[context]]
+        r=model(emb.view(-1,context_size*feat))
         r=torch.argmax(r).item()
         context=context[1:]+[r]
         pkm.append(imap[r])
