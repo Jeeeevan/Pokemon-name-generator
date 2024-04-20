@@ -12,11 +12,12 @@ feat=6
 batch_size=32
 
 class NN(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self,EM) -> None:
         super(NN,self).__init__()
         self.fc1=nn.Linear(context_size*feat,16)
         self.bn1=nn.BatchNorm1d(1)
         self.fc2=nn.Linear(16,27)
+        self.EM=nn.Parameter(EM)
     def forward(self, x):
         x=x.float()
         x=F.tanh(self.fc1(x))
@@ -60,10 +61,10 @@ imap={i:ele for i,ele in enumerate(char)}
 Xtrain,Ytrain=create_dataset(train)
 Xtest,Ytest=create_dataset(test)
 
-model=NN()
+EM=torch.randn((27,feat))
+model=NN(EM)
 lossfn=nn.CrossEntropyLoss()   
 opt=optim.SGD(model.parameters(),lr=0.001)
-EM=torch.randn((27,feat))
 
 print("Training started")
 for epoch in range(epochs):
@@ -84,15 +85,15 @@ for epoch in range(epochs):
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(Xtrain)}")
 model.eval()
 print("End of training")
-torch.save(model.state_dict(), 'Model weights')
+torch.save(model.state_dict(),'weights.pt')
 print("Weights saved")
-# test_loss = 0.0
-# with torch.no_grad():
-#     for i in range(len(Xtest)):
-#         out = model(Xtest[i].unsqueeze(0))
-#         test_loss += lossfn(out, Ytest[i].unsqueeze(0)).item()
+test_loss = 0.0
+with torch.no_grad():
+    for i in range(len(Xtest)):
+        out = model(EM[Xtest].view(-1,context_size*feat))
+        test_loss += lossfn(out, Ytest).item()
 
-# print(f"Test Loss: {test_loss / len(Xtest)}")
+print(f"Test Loss: {test_loss / len(Xtest)}")
 for j in range(5):
     rr=random.randint(1,27)
     context=[0]*(context_size-1)+[rr]
