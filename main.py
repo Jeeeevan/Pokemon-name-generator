@@ -1,112 +1,115 @@
 import pandas as pd
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
-import random 
 import numpy as np
-random.seed(4)
-context_size=4
-epochs=1000
-feat=6
-batch_size=32
+from torch import nn
+import torch.nn.functional as F
+import random
+import torch
+import matplotlib.pyplot as plt
+from torch import optim
 
-class NN(nn.Module):
-    def __init__(self,EM) -> None:
-        super(NN,self).__init__()
-        self.fc1=nn.Linear(context_size*feat,16)
-        self.bn1=nn.BatchNorm1d(1)
-        self.fc2=nn.Linear(16,27)
-        self.EM=nn.Parameter(EM)
-    def forward(self, x):
-        x=x.float()
-        x=F.tanh(self.fc1(x))
-        # x=self.bn1(x)
-        x=F.tanh(self.fc2(x))
-        return x
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print("Running on", device)
+
+features = 30
+num_epochs = 100
+hidden_state_size = 30
+batch_size = 16
+
 def load_dataset():
-    df=pd.read_csv('pokemon.csv')
-    names=df.name.values
-    names=[n.lower() for n in names ]
+    df = pd.read_csv('pokemon.csv')
+    names = df.name.values
+    names = [n.lower() for n in names]
     symbols = [' ', '\'', '-', '2', ':', 'é', '♀', '♂']
     cleaned_names = []
     for name in names:
-        cleaned_name = ''
-        for char in name:
-            if char not in symbols:
-                cleaned_name += char
-        cleaned_names.append(cleaned_name)
-    names = cleaned_names
-    split=int(0.9*len(names))
-    random.shuffle(names)
-    train=names[:split]
-    test=names[split:]
-    return names,train,test
+        cleaned_name = ''.join([char for char in name if char not in symbols])
+        cleaned_names.append(cleaned_name+'.')
+    random.shuffle(cleaned_names)
+    return cleaned_names
 
-def create_dataset(words):
-    X, Y = [], []
-    for w in words:
-        short_term_memory=[0]*context_size
-        for ch in w+'.':    
-            X.append(short_term_memory)
-            Y.append(cmap[ch])
-            short_term_memory=short_term_memory[1:]+[cmap[ch]]
-    return torch.tensor(X),torch.tensor(Y)
+class Embedding(nn.Module):
+    def __init__(self, vocab_size, embedding_dim):
+        super(Embedding, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim).to(device)
+        
+    def forward(self, idx):
+        return self.embedding(idx)
 
-names,train,test=load_dataset()
-char=[ele for ele in ''.join(names) if ele not in [' ','\'','-','2',':','é', '♀', '♂']]
-char=sorted(list(set(char)))
-cmap={ele:i for i,ele in enumerate(char)}
-imap={i:ele for i,ele in enumerate(char)}
-Xtrain,Ytrain=create_dataset(train)
-Xtest,Ytest=create_dataset(test)
+class Model(nn.Module):
+    def __init__(self, input_size, hidden_size, output_size, num_layers=2):
+        super(Model, self).__init__()
+        self.embedding = Embedding(output_size, input_size)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True).to(device)
+        self.fc = nn.Linear(hidden_size, output_size).to(device)
+    
+    def forward(self, x, hidden=None):
+        x = self.embedding(x)
+        out, hidden = self.lstm(x, hidden)
+        out = self.fc(out)  # Apply the linear layer to each time step
+        return out, hidden
+    
+    def generate(self, char2idx, idx2char, start_char='a', max_length=20):
+        idx = torch.tensor([char2idx[start_char]], dtype=torch.long).unsqueeze(0).to(device)
+        name = start_char
+        hidden = None
+        for _ in range(max_length - 1):
+            output, hidden = self.forward(idx, hidden)
+            output = F.softmax(output[:, -1, :], dim=-1)  # Softmax on the last time step's output
+            top_i = torch.multinomial(output, 1).item()
+            next_char = idx2char[top_i]
+            if next_char == '.':  # Assuming '<end>' is a special end token if used
+                break
+            name += next_char
+            idx = torch.tensor([top_i], dtype=torch.long).unsqueeze(0).to(device)
+        return name
 
-EM=torch.randn((27,feat))
-model=NN(EM)
-lossfn=nn.CrossEntropyLoss()   
-opt=optim.SGD(model.parameters(),lr=0.001)
+def train_model(model, names, char2idx, idx2char, num_epochs, batch_size, learning_rate=0.001):
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.CrossEntropyLoss()
 
-print("Training started")
-for epoch in range(epochs):
-    model.train()
-    running_loss=0.0    
-    for batchidx in range(0,len(Xtrain),batch_size):
-        input=Xtrain[batchidx:batchidx+batch_size]
-        label=Ytrain[batchidx:batchidx+batch_size]
+    for epoch in range(num_epochs):
+        epoch_loss = 0
+        random.shuffle(names)
+        
+        for bidx in range(0, len(names), batch_size):
+            batch_names = names[bidx:bidx + batch_size]
+            max_length = max(len(name) for name in batch_names)
+            input_batch = torch.zeros(batch_size, max_length - 1, dtype=torch.long).to(device)
+            target_batch = torch.zeros(batch_size, max_length - 1, dtype=torch.long).to(device)
+            
+            for i, name in enumerate(batch_names):
+                for t in range(len(name) - 1):
+                    input_batch[i, t] = char2idx[name[t]]
+                    target_batch[i, t] = char2idx[name[t + 1]]
+            
+            optimizer.zero_grad()
+            output, _ = model(input_batch)
+            output = output.view(-1, vocab_size)  # Reshape for loss computation
+            target_batch = target_batch.view(-1)
+            loss = criterion(output, target_batch)
+            loss.backward()
+            optimizer.step()
+            
+            epoch_loss += loss.item()
 
-        emb=EM[input]
-        out=model(emb.view(-1,context_size*feat))
-        loss=lossfn(out, label)
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        running_loss += loss.item()
-    if epoch%20==0:
-        print(f"Epoch [{epoch+1}/{epochs}], Loss: {running_loss / len(Xtrain)}")
-model.eval()
-print("End of training")
-torch.save(model.state_dict(),'weights.pt')
-print("Weights saved")
-test_loss = 0.0
-with torch.no_grad():
-    for i in range(len(Xtest)):
-        out = model(EM[Xtest].view(-1,context_size*feat))
-        test_loss += lossfn(out, Ytest).item()
+        print(f'Epoch {epoch+1}/{num_epochs}, Loss: {epoch_loss/len(names):.4f}')
 
-print(f"Test Loss: {test_loss / len(Xtest)}")
-for j in range(5):
-    rr=random.randint(1,27)
-    context=[0]*(context_size-1)+[rr]
-    pkm=[imap[rr]]
-    check=0
-    while context[-1]!=0:
-        check=check+1
-        if check>10:
-            break
-        emb=EM[[context]]
-        r=model(emb.view(-1,context_size*feat))
-        r=torch.argmax(r).item()
-        context=context[1:]+[r]
-        pkm.append(imap[r])
-    print(''.join(pkm))
+names = load_dataset()
+char2idx = {char: idx for idx, char in enumerate(sorted(set(''.join(names))))}
+idx2char = {idx: char for char, idx in char2idx.items()}
 
+vocab_size = len(char2idx)
+model = Model(features, hidden_state_size, vocab_size, num_layers=2)
+
+train_model(model, names, char2idx, idx2char, num_epochs, batch_size)
+
+# Save the weights of the Model
+torch.save(model.state_dict(), 'model_weights.pth')
+
+# Load the model weights (optional, for demonstration)
+# model.load_state_dict(torch.load('model_weights.pth'))
+
+# Generate new names
+for _ in range(10):
+    start_char = random.choice(list(char2idx.keys()))
+    print(model.generate(char2idx, idx2char, start_char))
