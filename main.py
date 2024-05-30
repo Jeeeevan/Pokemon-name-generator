@@ -99,7 +99,7 @@ char2idx = {char: idx for idx, char in enumerate(sorted(set(''.join(names))))}
 idx2char = {idx: char for char, idx in char2idx.items()}
 
 vocab_size = len(char2idx)
-model = Model(features, hidden_state_size, vocab_size, num_layers=2)
+model = Model(features, hidden_state_size, vocab_size, num_layers=4)
 
 train_model(model, names, char2idx, idx2char, num_epochs, batch_size)
 
